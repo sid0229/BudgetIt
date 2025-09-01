@@ -41,7 +41,6 @@ Unlike traditional budgeting apps, **BudgetIt is conversational and intuitive**.
 ## 🛠️ Installation & Running Locally  
 
 Clone the repo:  
-```bash
 git clone https://github.com/your-username/BudgetIt.git
 cd BudgetIt
 
@@ -65,7 +64,7 @@ src/components/Chat/chatbot.tsx
 
 Replace the placeholder with your API key:
 
-const API_KEY = "YOUR_API_KEY"; '''
+const API_KEY = "YOUR_API_KEY";
 
 
 ## 👨‍👩‍👧‍👦 Team Members  
