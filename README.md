@@ -12,7 +12,11 @@ Unlike traditional budgeting apps, **BudgetIt is conversational and intuitive**.
 - Spending pattern **analysis**  
 - AI-generated **financial insights**  
 
-> 🎯 Our focus: **Affordability, Accessibility, and Interactivity** for student-centric financial management.  
+> 🎯 Our focus: **Affordability, Accessibility, and Interactivity** for student-centric financial management.
+
+## 🌐 Live Demo  
+🚀 [**Click here to try BudgetIt**](https://budget-it-pi.vercel.app/)  
+
 
 ---
 
@@ -61,5 +65,19 @@ src/components/Chat/chatbot.tsx
 
 Replace the placeholder with your API key:
 
-const API_KEY = "YOUR_API_KEY";
+const API_KEY = "YOUR_API_KEY"; '''
+
+
+## 👨‍👩‍👧‍👦 Team Members  
+
+| Name                  | Role / Contribution            |
+|-----------------------|--------------------------------|
+| **Karina Bataeva**    | UI/UX Design & AI Integration  |
+| **Dhwani Rajput**     | Frontend Development           |
+| **Siddhant Gahlot**   | Backend & AI Systems           |
+| **Anmol Kathuria**    | Data Handling & APIs           |
+| **Vishal Kumar Sharma** | Testing & Deployment         |
+
+
+
 
