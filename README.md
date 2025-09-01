@@ -26,10 +26,10 @@ Unlike traditional budgeting apps, **BudgetIt is conversational and intuitive**.
 ---
 
 ## 🚀 Tech Stack  
-- **Frontend:** React + Tailwind CSS  
+- **Frontend:** React + Tailwind CSS + TypeScript
 - **Backend:** Flask (Python)  
-- **AI/LLM:** Google Gemini 2.0 API  
-- **Database:** (if you used any, add here)  
+- **AI/LLM:** Google Gemini 2.0 API flash  
+- **Database:** SQL DB 
 - **Other Tools:** NPM, pip  
 
 ---
