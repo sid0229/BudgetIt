@@ -56,7 +56,7 @@ To enable the chatbot assistant, add your own Google Gemini API Key:
 
 Open:
 
-src/components/chatbot.tsx
+src/components/Chat/chatbot.tsx
 
 
 Replace the placeholder with your API key:
