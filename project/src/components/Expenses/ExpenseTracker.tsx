@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { expensesAPI } from '../../utils/api';
-import { Plus, Calendar, DollarSign, Tag, Sparkles, TrendingDown } from 'lucide-react';
+import { expensesAPI, type CategorizeResponse } from '../../utils/api';
+import { Plus, Calendar, DollarSign, Tag, Sparkles, TrendingDown, Wand2 } from 'lucide-react';
+
+const categories = ['food', 'transport', 'rent', 'entertainment', 'utilities', 'other'];
 
 interface Expense {
   id: number;
@@ -22,8 +24,11 @@ const ExpenseTracker: React.FC = () => {
     description: '',
     date: new Date().toISOString().split('T')[0],
   });
+  // True once the user picks a category by hand; auto-detection then stops overriding it
+  const [categoryTouched, setCategoryTouched] = useState(false);
+  const [autoCategory, setAutoCategory] = useState<CategorizeResponse | null>(null);
+  const categorizeRequestId = useRef(0);
 
-  const categories = ['food', 'transport', 'rent', 'entertainment', 'utilities', 'other'];
   const categoryEmojis: Record<string, string> = {
     food: '🍕',
     transport: '🚗',
@@ -36,6 +41,45 @@ const ExpenseTracker: React.FC = () => {
   useEffect(() => {
     fetchExpenses();
   }, []);
+
+  // Debounced auto-categorisation of the description field
+  useEffect(() => {
+    const description = newExpense.description.trim();
+    if (!showAddForm || categoryTouched || description.length < 3) {
+      if (!description) setAutoCategory(null);
+      return;
+    }
+    const requestId = ++categorizeRequestId.current;
+    const timer = setTimeout(async () => {
+      try {
+        const response = await expensesAPI.categorize(description);
+        // Ignore stale responses or ones that arrive after a manual pick
+        if (requestId !== categorizeRequestId.current) return;
+        const result = response.data;
+        if (result.method === 'default' || !categories.includes(result.category)) {
+          setAutoCategory(null);
+          return;
+        }
+        setAutoCategory(result);
+        setNewExpense(prev => ({ ...prev, category: result.category }));
+      } catch (error) {
+        console.error('Error auto-categorising expense:', error);
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [newExpense.description, categoryTouched, showAddForm]);
+
+  const resetForm = () => {
+    setNewExpense({
+      amount: '',
+      category: 'food',
+      description: '',
+      date: new Date().toISOString().split('T')[0],
+    });
+    setCategoryTouched(false);
+    setAutoCategory(null);
+    categorizeRequestId.current++;
+  };
 
   const fetchExpenses = async () => {
     try {
@@ -58,12 +102,7 @@ const ExpenseTracker: React.FC = () => {
         date: newExpense.date,
       });
       
-      setNewExpense({
-        amount: '',
-        category: 'food',
-        description: '',
-        date: new Date().toISOString().split('T')[0],
-      });
+      resetForm();
       setShowAddForm(false);
       fetchExpenses();
     } catch (error) {
@@ -72,6 +111,11 @@ const ExpenseTracker: React.FC = () => {
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+    if (e.target.name === 'category') {
+      setCategoryTouched(true);
+      setAutoCategory(null);
+      categorizeRequestId.current++;
+    }
     setNewExpense({
       ...newExpense,
       [e.target.name]: e.target.value,
@@ -154,6 +198,13 @@ const ExpenseTracker: React.FC = () => {
                       ))}
                     </select>
                   </div>
+                  {autoCategory && !categoryTouched && (
+                    <p className="mt-1 text-xs text-green-600 flex items-center">
+                      <Wand2 className="h-3 w-3 mr-1" />
+                      {t('expenses.autoDetected', { category: t(`expenses.categories.${autoCategory.category}`) })}
+                      <span className="ml-1 text-gray-400">({autoCategory.method})</span>
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -190,7 +241,10 @@ const ExpenseTracker: React.FC = () => {
                 <div className="flex space-x-3 pt-4">
                   <button
                     type="button"
-                    onClick={() => setShowAddForm(false)}
+                    onClick={() => {
+                      resetForm();
+                      setShowAddForm(false);
+                    }}
                     className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-xl text-gray-700 hover:bg-gray-50 transition-all"
                   >
                     Cancel

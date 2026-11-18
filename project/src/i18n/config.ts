@@ -45,6 +45,7 @@ const resources = {
       'expenses.categories.entertainment': 'Entertainment',
       'expenses.categories.utilities': 'Utilities',
       'expenses.categories.other': 'Other',
+      'expenses.autoDetected': 'auto-detected: {{category}}',
       
       // Goals
       'goals.title': 'Savings Goals',
@@ -116,6 +117,7 @@ const resources = {
       'expenses.categories.entertainment': 'मनोरंजन',
       'expenses.categories.utilities': 'उपयोगिताएं',
       'expenses.categories.other': 'अन्य',
+      'expenses.autoDetected': 'स्वतः पहचाना गया: {{category}}',
       
       // Goals
       'goals.title': 'बचत लक्ष्य',

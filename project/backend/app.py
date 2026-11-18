@@ -7,13 +7,25 @@ from datetime import datetime, timedelta
 import json
 import os
 
+from dotenv import load_dotenv
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, '.env'))
+
+from ai import chat as ai_chat
+from ai import insights as ai_insights
+from ai import memory as ai_memory
+from ai import llm as ai_llm
+from ai import categorize as ai_categorize
+
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(16)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY') or secrets.token_hex(16)
+app.config['DATABASE'] = os.environ.get('BUDGETIT_DB', 'budgetit.db')
 CORS(app, supports_credentials=True)
 
 # Database initialization
 def init_db():
-    conn = sqlite3.connect('budgetit.db')
+    conn = sqlite3.connect(app.config['DATABASE'])
     cursor = conn.cursor()
     
     # Users table
@@ -70,6 +82,13 @@ def init_db():
     ''')
     
     conn.commit()
+
+    # GenAI tables (personalization: bandit/feedback; ai: chat history + memory)
+    import personalization
+    personalization.init_tables(conn)
+    ai_memory.init_tables(conn)
+
+    conn.commit()
     conn.close()
 
 # Helper functions
@@ -77,9 +96,17 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def get_db_connection():
-    conn = sqlite3.connect('budgetit.db')
+    conn = sqlite3.connect(app.config['DATABASE'])
     conn.row_factory = sqlite3.Row
     return conn
+
+def current_user():
+    return {
+        'id': session['user_id'],
+        'name': session.get('user_name'),
+        'email': session.get('user_email'),
+        'user_type': session.get('user_type', 'student'),
+    }
 
 # Authentication routes
 @app.route('/api/auth/signup', methods=['POST'])
@@ -218,6 +245,7 @@ def add_expense():
     expense_id = cursor.lastrowid
     conn.commit()
     conn.close()
+    ai_insights.invalidate(session['user_id'])
     
     return jsonify({
         'id': expense_id,
@@ -262,6 +290,7 @@ def set_budget():
     )
     conn.commit()
     conn.close()
+    ai_insights.invalidate(session['user_id'])
     
     return jsonify({'message': 'Budget set successfully'}), 200
 
@@ -302,39 +331,121 @@ def add_goal():
     goal_id = cursor.lastrowid
     conn.commit()
     conn.close()
+    ai_insights.invalidate(session['user_id'])
     
     return jsonify({
         'id': goal_id,
         'message': 'Goal added successfully'
     }), 201
 
-# AI Chat routes (placeholder for OpenAI integration)
+# AI routes (logic lives in backend/ai/)
 @app.route('/api/chat', methods=['POST'])
 def chat_with_ai():
     if 'user_id' not in session:
         return jsonify({'error': 'Not authenticated'}), 401
-    
-    data = request.json
-    message = data.get('message', '')
-    
-    # Placeholder for OpenAI API integration
-    # TODO: Replace with actual OpenAI API call
-    mock_responses = {
-        'food': "Based on your spending patterns, you've spent ₹8,400 on food this week. Consider meal prep to save 30% on food costs!",
-        'laptop': "To save for a laptop, I recommend setting aside ₹3,500 weekly. With your current spending, you could afford a ₹56,000 laptop in 16 weeks.",
-        'budget': "Your current weekly budget utilization is 85%. You're doing great! Consider reducing entertainment expenses by 10% to boost savings.",
-        'default': "I'm here to help with your budgeting needs! Ask me about your expenses, savings goals, or budget optimization."
-    }
-    
-    response = mock_responses.get('default')
-    for keyword in mock_responses:
-        if keyword in message.lower():
-            response = mock_responses[keyword]
-            break
-    
+
+    data = request.get_json(silent=True) or {}
+    message = str(data.get('message', '') or '').strip()
+    if not message:
+        return jsonify({'error': 'Message is required'}), 400
+
+    conn = get_db_connection()
+    try:
+        result = ai_chat.answer(conn, current_user(), message)
+    finally:
+        conn.close()
+
     return jsonify({
-        'response': response,
+        'response': result['response'],
+        'sources': result.get('sources', []),
+        'tools_used': result.get('tools_used', []),
+        'generated_by': result.get('generated_by', 'fallback'),
         'timestamp': datetime.now().isoformat()
+    }), 200
+
+@app.route('/api/chat/history', methods=['GET'])
+def get_chat_history():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    conn = get_db_connection()
+    messages = ai_memory.get_messages(conn, session['user_id'], limit=100)
+    conn.close()
+
+    return jsonify({'messages': messages}), 200
+
+@app.route('/api/chat/history', methods=['DELETE'])
+def clear_chat_history():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    conn = get_db_connection()
+    ai_memory.clear_history(conn, session['user_id'])
+    conn.close()
+
+    return jsonify({'message': 'cleared'}), 200
+
+@app.route('/api/insights', methods=['GET'])
+def get_insights():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    conn = get_db_connection()
+    try:
+        payload = ai_insights.generate_insights(conn, current_user())
+    finally:
+        conn.close()
+
+    return jsonify(payload), 200
+
+@app.route('/api/insights/feedback', methods=['POST'])
+def insights_feedback():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    data = request.get_json(silent=True) or {}
+    tip_id = data.get('tip_id')
+    reward = data.get('reward')
+    if not tip_id or reward not in (0, 1, True, False):
+        return jsonify({'error': 'tip_id and reward (1 or 0) are required'}), 400
+
+    conn = get_db_connection()
+    try:
+        ai_insights.record_feedback(conn, current_user(), str(tip_id), 1.0 if reward else 0.0)
+    except Exception as exc:
+        return jsonify({'error': 'Could not record feedback: %s' % exc}), 400
+    finally:
+        conn.close()
+
+    return jsonify({'message': 'ok'}), 200
+
+@app.route('/api/expenses/categorize', methods=['POST'])
+def categorize_expense():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    data = request.get_json(silent=True) or {}
+    description = str(data.get('description', '') or '')
+    result = ai_categorize.categorize(description)
+
+    return jsonify({
+        'category': result['category'],
+        'confidence': result['confidence'],
+        'method': result['method']
+    }), 200
+
+@app.route('/api/ai/status', methods=['GET'])
+def ai_status():
+    try:
+        from rag.retriever import is_dense_enabled
+        dense = bool(is_dense_enabled())
+    except Exception:
+        dense = False
+
+    return jsonify({
+        'llm': ai_llm.is_configured(),
+        'dense_retrieval': dense,
+        'model': ai_llm.get_model()
     }), 200
 
 # Analytics routes
@@ -371,4 +482,4 @@ def get_weekly_analytics():
 
 if __name__ == '__main__':
     init_db()
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=int(os.environ.get('PORT', 5001)))

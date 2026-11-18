@@ -3,11 +3,14 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { analyticsAPI, budgetsAPI, expensesAPI } from '../../utils/api';
+import {
+  analyticsAPI, budgetsAPI, expensesAPI, insightsAPI,
+  type InsightsResponse, type InsightType, type ServerInsight,
+} from '../../utils/api';
 import { 
   DollarSign, TrendingUp, Target, Plus, Settings, Sparkles, PiggyBank, 
   AlertTriangle, CheckCircle, TrendingDown, Calendar, Bell, 
-  Activity, Zap, Award, Filter, Download, RefreshCw, Edit, Trash2, X
+  Activity, Zap, Award, RefreshCw, Edit, Trash2, X, ThumbsUp, ThumbsDown, UserCircle
 } from 'lucide-react';
 
 interface AnalyticsData {
@@ -16,7 +19,9 @@ interface AnalyticsData {
 }
 
 interface AIInsight {
-  type: 'warning' | 'success' | 'info' | 'celebration';
+  id?: string;
+  tipId?: string | null;
+  type: InsightType;
   title: string;
   message: string;
   icon: React.ReactNode;
@@ -32,6 +37,30 @@ interface Expense {
   description: string;
   date: string;
 }
+
+// Visual style per insight type (same palette as the local rule-based insights)
+const INSIGHT_STYLES: Record<InsightType, { icon: () => React.ReactNode; color: string }> = {
+  warning: { icon: () => <AlertTriangle className="h-6 w-6" />, color: 'from-red-400 to-pink-500' },
+  info: { icon: () => <Bell className="h-6 w-6" />, color: 'from-yellow-400 to-orange-500' },
+  celebration: { icon: () => <Award className="h-6 w-6" />, color: 'from-green-400 to-emerald-500' },
+  success: { icon: () => <CheckCircle className="h-6 w-6" />, color: 'from-green-400 to-green-500' },
+};
+
+const mapServerInsight = (insight: ServerInsight): AIInsight => {
+  const style = INSIGHT_STYLES[insight.type] ?? INSIGHT_STYLES.info;
+  return {
+    id: insight.id,
+    tipId: insight.tip_id,
+    type: INSIGHT_STYLES[insight.type] ? insight.type : 'info',
+    title: insight.title,
+    message: insight.message,
+    icon: style.icon(),
+    color: style.color,
+    tip: insight.action ?? undefined,
+  };
+};
+
+const formatINR = (value: number) => `₹${Math.round(value).toLocaleString('en-IN')}`;
 
 interface AINotification {
   id: string;
@@ -55,6 +84,9 @@ const Dashboard: React.FC = () => {
   const [showInsights, setShowInsights] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
   const [aiNotification, setAiNotification] = useState<AINotification | null>(null);
+  const [serverInsights, setServerInsights] = useState<InsightsResponse | null>(null);
+  const [insightsFailed, setInsightsFailed] = useState(false);
+  const [feedbackGiven, setFeedbackGiven] = useState<Record<string, 0 | 1>>({});
   const [newBudget, setNewBudget] = useState({
     category: 'food',
     amount: '',
@@ -78,7 +110,38 @@ const Dashboard: React.FC = () => {
   useEffect(() => {
     fetchAnalytics();
     fetchExpenses();
+    fetchInsights();
   }, []);
+
+  const fetchInsights = async () => {
+    try {
+      const response = await insightsAPI.getInsights();
+      const data = response.data;
+      setServerInsights({
+        ...data,
+        insights: Array.isArray(data?.insights) ? data.insights : [],
+        anomalies: Array.isArray(data?.anomalies) ? data.anomalies : [],
+        persona: data?.persona ?? null,
+        forecast: data?.forecast ?? null,
+      });
+      setInsightsFailed(false);
+    } catch (error) {
+      console.error('Error fetching AI insights, using local insights:', error);
+      setServerInsights(null);
+      setInsightsFailed(true);
+    }
+  };
+
+  const handleInsightFeedback = async (tipId: string, reward: 0 | 1) => {
+    if (feedbackGiven[tipId] !== undefined) return;
+    // Optimistic: lock the buttons immediately
+    setFeedbackGiven(prev => ({ ...prev, [tipId]: reward }));
+    try {
+      await insightsAPI.sendFeedback(tipId, reward);
+    } catch (error) {
+      console.error('Error sending insight feedback:', error);
+    }
+  };
 
   const fetchAnalytics = async () => {
     try {
@@ -111,6 +174,7 @@ const Dashboard: React.FC = () => {
       setNewBudget({ category: 'food', amount: '', period: 'weekly' });
       setShowBudgetForm(false);
       fetchAnalytics();
+      fetchInsights();
       showAINotification();
     } catch (error) {
       console.error('Error setting budget:', error);
@@ -135,6 +199,7 @@ const Dashboard: React.FC = () => {
       setShowExpenseForm(false);
       fetchAnalytics();
       fetchExpenses();
+      fetchInsights();
       showAINotification();
     } catch (error) {
       console.error('Error adding expense:', error);
@@ -176,6 +241,7 @@ const Dashboard: React.FC = () => {
     try {
       // Note: You'll need to implement deleteExpense in your API
       // await expensesAPI.deleteExpense(expenseId);
+      console.warn(`Delete expense ${expenseId}: not yet supported by the API`);
       fetchAnalytics();
       fetchExpenses();
       showAINotification();
@@ -304,7 +370,52 @@ const Dashboard: React.FC = () => {
     return insights;
   };
 
-  const aiInsights = generateAIInsights();
+  const localInsights = generateAIInsights();
+  const usingServerInsights = !!serverInsights && serverInsights.insights.length > 0;
+  const aiInsights: AIInsight[] = usingServerInsights
+    ? serverInsights.insights.map(mapServerInsight)
+    : localInsights;
+  const insightsSourceLabel = usingServerInsights
+    ? (serverInsights.generated_by === 'llm' ? '✨ Generated by Gemini' : '📐 Rule-based')
+    : (insightsFailed ? '📴 Offline (local rules)' : '📐 Rule-based');
+
+  const renderInsightFeedback = (insight: AIInsight) => {
+    if (!insight.tipId) return null;
+    const tipId = insight.tipId;
+    const given = feedbackGiven[tipId];
+    const baseBtn = `p-1.5 rounded-lg transition-colors disabled:cursor-not-allowed`;
+    return (
+      <div className="mt-3 flex items-center space-x-2">
+        <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+          {given === undefined ? 'Helpful?' : 'Thanks for the feedback!'}
+        </span>
+        <button
+          type="button"
+          onClick={() => handleInsightFeedback(tipId, 1)}
+          disabled={given !== undefined}
+          aria-label="Helpful"
+          className={`${baseBtn} ${given === 1 ? 'bg-green-100 text-green-600' : `${isDarkMode ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-green-50'} disabled:opacity-40`}`}
+        >
+          <ThumbsUp className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => handleInsightFeedback(tipId, 0)}
+          disabled={given !== undefined}
+          aria-label="Not helpful"
+          className={`${baseBtn} ${given === 0 ? 'bg-pink-100 text-pink-600' : `${isDarkMode ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-pink-50'} disabled:opacity-40`}`}
+        >
+          <ThumbsDown className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  };
+
+  const sourceBadge = (
+    <span className={`text-xs px-2 py-0.5 rounded-full ${isDarkMode ? 'bg-gray-700 text-gray-300' : 'bg-yellow-50 text-yellow-700 border border-yellow-200'}`}>
+      {insightsSourceLabel}
+    </span>
+  );
 
   const COLORS = ['#F472B6', '#34D399', '#A78BFA', '#FBBF24', '#FB7185'];
 
@@ -335,7 +446,10 @@ const Dashboard: React.FC = () => {
             </div>
             <div className="flex space-x-3">
               <button
-                onClick={() => fetchAnalytics()}
+                onClick={() => {
+                fetchAnalytics();
+                fetchInsights();
+              }}
                 className="px-4 py-2 bg-gradient-to-r from-purple-400 to-purple-500 text-white rounded-full hover:shadow-lg hover:scale-105 transition-all duration-200 flex items-center space-x-2"
               >
                 <RefreshCw className="h-4 w-4" />
@@ -366,6 +480,7 @@ const Dashboard: React.FC = () => {
               <h2 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'} flex items-center`}>
                 <Zap className="h-6 w-6 text-yellow-400 mr-2" />
                 AI Insights
+                <span className="ml-3 font-normal">{sourceBadge}</span>
               </h2>
               <button
                 onClick={() => setShowInsights(false)}
@@ -377,7 +492,7 @@ const Dashboard: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {aiInsights.map((insight, index) => (
                 <div
-                  key={index}
+                  key={insight.id ?? index}
                   className={`${isDarkMode ? 'bg-gray-800/80' : 'bg-white/80'} backdrop-blur-sm p-6 rounded-2xl shadow-lg border ${isDarkMode ? 'border-gray-700' : 'border-pink-100'} hover:shadow-xl transition-all duration-300`}
                 >
                   <div className="flex items-start space-x-3">
@@ -391,6 +506,7 @@ const Dashboard: React.FC = () => {
                       <p className={`text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>
                         {insight.message}
                       </p>
+                      {renderInsightFeedback(insight)}
                     </div>
                   </div>
                 </div>
@@ -794,12 +910,12 @@ const Dashboard: React.FC = () => {
                       cx="50%"
                       cy="50%"
                       labelLine={false}
-                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
                       outerRadius={80}
                       fill="#8884d8"
                       dataKey="value"
                     >
-                      {getPieData().map((entry, index) => (
+                      {getPieData().map((_, index) => (
                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                       ))}
                     </Pie>
@@ -866,21 +982,86 @@ const Dashboard: React.FC = () => {
                 Get personalized recommendations and insights about your spending patterns.
               </p>
               
-              {/* AI Processing Status */}
-              <div className="mb-6 space-y-3">
-                <div className="flex items-center justify-between text-sm">
-                  <span className={isDarkMode ? 'text-gray-400' : 'text-gray-600'}>AI Analysis Progress</span>
-                  <span className="text-green-500 font-medium">92% Complete</span>
+              <div className="flex justify-center mb-6">{sourceBadge}</div>
+
+              {usingServerInsights && serverInsights && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 text-left">
+                  {/* Persona */}
+                  {serverInsights.persona && (
+                    <div className={`p-5 rounded-xl border ${isDarkMode ? 'border-gray-600 bg-gray-700/50' : 'border-purple-100 bg-purple-50/60'}`}>
+                      <div className="flex items-center space-x-2 mb-2">
+                        <UserCircle className="h-5 w-5 text-purple-400" />
+                        <span className={`text-xs uppercase tracking-wide ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Your spending persona</span>
+                      </div>
+                      <span className="inline-block px-3 py-1 rounded-full text-sm font-semibold bg-gradient-to-r from-purple-400 to-pink-400 text-white mb-2">
+                        {serverInsights.persona.label}
+                      </span>
+                      <p className={`text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                        {serverInsights.persona.description}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Month-end forecast */}
+                  {serverInsights.forecast && (() => {
+                    const f = serverInsights.forecast;
+                    const budget = f.monthly_budget;
+                    const pct = budget && budget > 0 ? Math.min(100, (f.projected_total / budget) * 100) : 0;
+                    const over = budget !== null && f.projected_total > budget;
+                    return (
+                      <div className={`p-5 rounded-xl border ${isDarkMode ? 'border-gray-600 bg-gray-700/50' : 'border-blue-100 bg-blue-50/60'}`}>
+                        <div className="flex items-center space-x-2 mb-2">
+                          <Calendar className="h-5 w-5 text-blue-400" />
+                          <span className={`text-xs uppercase tracking-wide ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Month-end forecast ({f.month})</span>
+                        </div>
+                        <div className={`text-sm space-y-1 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                          <div className="flex justify-between"><span>Spent so far</span><span className="font-semibold">{formatINR(f.spent_so_far)}</span></div>
+                          <div className="flex justify-between"><span>Projected total</span><span className={`font-semibold ${over ? 'text-pink-600' : 'text-green-600'}`}>{formatINR(f.projected_total)}</span></div>
+                          <div className="flex justify-between"><span>Monthly budget</span><span className="font-semibold">{budget !== null ? formatINR(budget) : 'Not set'}</span></div>
+                        </div>
+                        {budget !== null && budget > 0 && (
+                          <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2 mt-3">
+                            <div className={`h-2 rounded-full ${over ? 'bg-gradient-to-r from-pink-400 to-red-500' : 'bg-gradient-to-r from-green-400 to-blue-500'}`} style={{ width: `${pct}%` }}></div>
+                          </div>
+                        )}
+                        {f.overrun_date ? (
+                          <p className="mt-2 text-xs text-pink-600 font-medium">
+                            ⚠️ Likely to cross budget on {f.overrun_date} (over by {formatINR(f.projected_overrun)})
+                          </p>
+                        ) : budget !== null ? (
+                          <p className="mt-2 text-xs text-green-600 font-medium">✅ On track to stay within budget</p>
+                        ) : null}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Anomalies */}
+                  <div className={`p-5 rounded-xl border ${isDarkMode ? 'border-gray-600 bg-gray-700/50' : 'border-orange-100 bg-orange-50/60'}`}>
+                    <div className="flex items-center space-x-2 mb-2">
+                      <Activity className="h-5 w-5 text-orange-400" />
+                      <span className={`text-xs uppercase tracking-wide ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Unusual spending this week</span>
+                    </div>
+                    {serverInsights.anomalies.length === 0 ? (
+                      <p className={`text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Nothing unusual. Your spending looks normal 👍</p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {serverInsights.anomalies.map(a => (
+                          <li key={a.category} className={`text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                            <span className="font-semibold">{t(`expenses.categories.${a.category}`, a.category)}</span>
+                            {': '}{formatINR(a.this_week)} vs usual {formatINR(a.baseline)}
+                            <span className="ml-1 text-xs text-orange-600 font-medium">({a.ratio.toFixed(1)}×)</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                 </div>
-                <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                  <div className="bg-gradient-to-r from-green-400 to-blue-500 h-2 rounded-full transition-all duration-1000 ease-out" style={{ width: '92%' }}></div>
-                </div>
-              </div>
+              )}
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {aiInsights.map((insight, index) => (
                   <div
-                    key={index}
+                    key={insight.id ?? index}
                     className={`p-6 rounded-xl border ${isDarkMode ? 'border-gray-600 bg-gray-700/50' : 'border-gray-200 bg-gray-50'} hover:shadow-lg transition-all duration-300 transform hover:scale-105`}
                   >
                     <div className="flex items-center space-x-3 mb-4">
@@ -908,6 +1089,7 @@ const Dashboard: React.FC = () => {
                         </p>
                       </div>
                     )}
+                    {renderInsightFeedback(insight)}
                   </div>
                 ))}
               </div>
